@@ -59,7 +59,7 @@ jobs:
           Restart-Service TermService -Force
 
       # ===============================
-      # 3) Create RDP User (FIXED)
+      # 3) Create RDP User (SAFE METHOD)
       # ===============================
       - name: Create RDP User
         shell: powershell
@@ -80,11 +80,52 @@ jobs:
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
 
       # ===============================
-      # 4) Install Tailscale
+      # 4) Install Tailscale (FIXED)
       # ===============================
       - name: Install Tailscale
         shell: powershell
         run: |
-          Invoke-WebRequest https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi `
-            -OutFile $env:TEMP\tailscale.msi
-          Start-Process msiexec.exe -ArgumentList "/i `"$env:TEMP\tailscale.msi`" /q
+          $msiPath = "$env:TEMP\tailscale.msi"
+
+          Invoke-WebRequest `
+            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" `
+            -OutFile $msiPath
+
+          Start-Process msiexec.exe `
+            -ArgumentList @("/i", $msiPath, "/quiet", "/norestart") `
+            -Wait
+
+      # ===============================
+      # 5) Connect Tailscale
+      # ===============================
+      - name: Connect Tailscale
+        shell: powershell
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=gh-fast-$env:GITHUB_RUN_ID
+
+          $ip=""
+          while (-not $ip) {
+            $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            Start-Sleep 3
+          }
+
+          echo "TS_IP=$ip" >> $env:GITHUB_ENV
+
+      # ===============================
+      # 6) Keep Runner Alive
+      # ===============================
+      - name: Keep Alive (RDP Access)
+        shell: powershell
+        run: |
+          Write-Host "===================================="
+          Write-Host " RDP READY"
+          Write-Host " IP   : $env:TS_IP"
+          Write-Host " USER : $env:RDP_USER"
+          Write-Host " PASS : $env:RDP_PASSWORD"
+          Write-Host "===================================="
+
+          while ($true) {
+            Start-Sleep -Seconds 300
+          }
