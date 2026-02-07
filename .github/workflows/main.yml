@@ -1,0 +1,86 @@
+name: RDP-FAST
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Optimize Windows for Performance
+        run: |
+          # Disable visual effects
+          Set-ItemProperty "HKCU:\Control Panel\Desktop" -Name VisualFXSetting -Value 2
+          Set-ItemProperty "HKCU:\Control Panel\Desktop\WindowMetrics" -Name MinAnimate -Value 0
+          Set-ItemProperty "HKCU:\Control Panel\Desktop" -Name DragFullWindows -Value 0
+          Set-ItemProperty "HKCU:\Control Panel\Desktop" -Name FontSmoothing -Value 0
+
+          # Disable background apps & services
+          Stop-Service SysMain -Force
+          Set-Service SysMain -StartupType Disabled
+
+          Stop-Service WSearch -Force
+          Set-Service WSearch -StartupType Disabled
+
+          # Max performance power plan
+          powercfg /setactive SCHEME_MIN
+
+          # Network optimization
+          Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" `
+            -Name TcpTimedWaitDelay -Value 30 -Type DWord -Force
+          Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" `
+            -Name MaxUserPort -Value 65534 -Type DWord -Force
+
+      - name: Configure RDP
+        run: |
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name fDenyTSConnections -Value 0 -Force
+
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name UserAuthentication -Value 0 -Force
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name SecurityLayer -Value 0 -Force
+
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" -ErrorAction SilentlyContinue
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+
+          Restart-Service TermService -Force
+
+      - name: Create RDP User
+        run: |
+          $password = [System.Web.Security.Membership]::GeneratePassword(20,4)
+          $secure = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser "RDP" -Password $secure -AccountNeverExpires
+          Add-LocalGroupMember Administrators RDP
+          Add-LocalGroupMember "Remote Desktop Users" RDP
+          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+
+      - name: Install Tailscale
+        run: |
+          Invoke-WebRequest https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi `
+            -OutFile $env:TEMP\ts.msi
+          Start-Process msiexec.exe -ArgumentList "/i $env:TEMP\ts.msi /quiet /norestart" -Wait
+
+      - name: Connect Tailscale
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=gh-fast-$env:GITHUB_RUN_ID
+
+          $ip=""
+          while (-not $ip) {
+            $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            Start-Sleep 3
+          }
+          echo "TS_IP=$ip" >> $env:GITHUB_ENV
+
+      - name: Keep Alive
+        run: |
+          Write-Host "============================"
+          Write-Host "RDP IP : $env:TS_IP"
+          Write-Host "USER   : RDP"
+          Write-Host "PASS   : $env:RDP_PASSWORD"
+          Write-Host "============================"
+          while ($true) { Start-Sleep 300 }
